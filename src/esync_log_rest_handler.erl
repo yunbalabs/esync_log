@@ -1,0 +1,115 @@
+%%%-------------------------------------------------------------------
+%%% @author thi
+%%% @copyright (C) 2015, <COMPANY>
+%%% @doc
+%%%
+%%% @end
+%%% Created : 27. 七月 2015 下午4:52
+%%%-------------------------------------------------------------------
+-module(esync_log_rest_handler).
+-author("thi").
+-define(DEFAULT_REQ_INDEX, 0).
+
+-behaviour(cowboy_loop_handler).
+
+-export([init/3]).
+-export([info/3]).
+-export([terminate/3]).
+
+-record(state, {
+    logger :: term()
+}).
+
+init(_, Req, _) ->
+    self() ! response,
+    {loop, Req, #state{}, hibernate}.
+
+info(response, Req, State) ->
+    Index = get_req_index(Req),
+    Logger = esync_log_op_logger:get_logger(),
+    case esync_log_op_logger:position_logger_to_index(Logger, Index) of
+        ok ->
+            Req2 = cowboy_req:set([{resp_state, waiting_stream}], Req),
+            {ok, Req3} = cowboy_req:chunked_reply(200, Req2),
+            trigger_next_line(),
+            {loop, Req3, State#state{logger = Logger}};
+        error ->
+            {ok, Req2} = cowboy_req:reply(413, [], <<"Index too big">>, Req),
+            {ok, Req, State#state{logger = none}}
+    end;
+
+info(send_line, Req, State = #state{logger = Logger}) ->
+    case esync_log_op_logger:get_line(Logger) of
+        {ok, Line} ->
+            send_line(Req, Line),
+            trigger_next_line(),
+            {loop, Req, State};
+        eof ->
+            trigger_next_line(),
+            {loop, Req, State};
+        {error, eof} ->
+            trigger_next_line(),
+            {loop, Req, State};
+        _ ->
+            esync_log_op_logger:close_logger(Logger),
+            {ok, Req, State#state{logger = none}}
+    end.
+
+terminate(Reason, _, _State = #state{logger = Logger}) ->
+    lager:debug("Req terminate by [~p]", [Reason]),
+    esync_log_op_logger:close_logger(Logger),
+    ok.
+
+trigger_next_line() ->
+    timer:sleep(500),
+    self() ! send_line.
+
+send_line(Req, Line) ->
+    cowboy_req:chunk(Line, Req),
+    ok.
+
+get_req_index(Req) ->
+    {_Method, Req2} = cowboy_req:method(Req),
+    {BinIndex, _Req3} = cowboy_req:qs_val(<<"index">>, Req2),
+    lager:debug("Index [~p]", [BinIndex]),
+    case BinIndex of
+        <<"undefined">> ->
+            lager:info("index argument not found, set to default index [~p]", [?DEFAULT_REQ_INDEX]),
+            ?DEFAULT_REQ_INDEX;
+        _ ->
+            try
+                binary_to_integer(BinIndex)
+            catch E:T ->
+                lager:error("parge binary index [~p] failed [~p:~p], set default index [~p]", [BinIndex, E, T, ?DEFAULT_REQ_INDEX]),
+                ?DEFAULT_REQ_INDEX
+            end
+    end.
+
+position_file_to_index(File, Index) ->
+    case File of
+        none -> ok;
+        _ ->
+            case Index of
+                0 ->
+                    file:position(File, {bof, 0});
+                _ ->
+                    position_line_by_line(File, Index)
+            end
+    end,
+    File.
+
+position_line_by_line(File, Index) ->
+    case file:read_line(File) of
+        {ok, Line} ->
+            case edis_op_logger:split_index_from_op_log_line(Line) of
+                Index ->
+                    lager:info("found index [~p] in Line [~p]", [Index, Line]),
+                    ok;
+                N when N < Index ->
+                    position_line_by_line(File, Index);
+                N ->
+                    lager:error("splited index [~p] > specified index [~p], set back to previos line [~p]", [N, Index, Line]),
+                    {ok, _} = file:position(File, {cur, -byte_size(Line)}),
+                    ok
+            end
+    end.
