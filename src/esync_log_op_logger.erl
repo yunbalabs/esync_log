@@ -4,17 +4,15 @@
 %%% @doc
 %%%
 %%% @end
-%%% Created : 27. 七月 2015 下午4:48
+%%% Created : 28. 七月 2015 上午10:59
 %%%-------------------------------------------------------------------
 -module(esync_log_op_logger).
 -author("thi").
 
--define(SERVER, ?MODULE).
--behaviour(gen_event).
+-behaviour(gen_server).
 
 %% API
--export([start_link/0,
-    add_handler/0]).
+-export([start_link/0]).
 
 -export([log_command/1, rest_sync/1]).
 
@@ -22,80 +20,18 @@
     split_index_from_op_log_line/1
 ]).
 
--export([format_command_to_op_log/2,
-    make_command_from_op_log/1]).
+%-export([format_command_to_op_log/2,
+%    make_command_from_op_log/1]).
 
-%% gen_event callbacks
+%% gen_server callbacks
 -export([init/1,
-    handle_event/2,
-    handle_call/2,
+    handle_call/3,
+    handle_cast/2,
     handle_info/2,
     terminate/2,
     code_change/3]).
 
 -define(SERVER, ?MODULE).
-
--record(state, {
-    op_log_file                                 ::term(),
-    op_index                                    ::integer(),
-    server_id       =   <<"default_server">>    ::binary(),
-    rest_request_id                             ::term(),
-    client
-}).
-
-%%%===================================================================
-%%% gen_event callbacks
-%%%===================================================================
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Creates an event manager
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(start_link() -> {ok, pid()} | {error, {already_started, pid()}}).
-start_link() ->
-    Server = gen_event:start_link({local, ?SERVER}),
-    add_handler(),
-    Server.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Adds an event handler
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(add_handler() -> ok | {'EXIT', Reason :: term()} | term()).
-add_handler() ->
-    gen_event:add_handler(?SERVER, ?MODULE, []).
-
-%% @doc Notifies an op log.
--spec log_command(#edis_command{}) -> ok.
-log_command(Command) ->
-    gen_event:notify(?MODULE, {oplog, Command}).
-
-%% @doc Notifies a rest sync.
--spec rest_sync(binary()) -> ok.
-rest_sync(Url) ->
-    gen_event:notify(?MODULE, {rest_sync, Url}).
-
-
-%%%===================================================================
-%%% gen_event callbacks
-%%%===================================================================
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Whenever a new event handler is added to an event manager,
-%% this function is called to initialize the event handler.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(init(InitArgs :: term()) ->
-    {ok, State :: #state{}} |
-    {ok, State :: #state{}, hibernate} |
-    {error, Reason :: term()}).
 
 -define(DEFAULT_LOG_IDX_FILE, "oplog/op_log.idx").
 -define(DEFAULT_START_OP_LOG_FILE_INDEX, 0).
@@ -106,12 +42,59 @@ rest_sync(Url) ->
 -define(OP_LOG_SEP, <<"\\">>).
 -define(DEFAULT_OP_LOG_START_INDEX, 0).
 
-init([]) ->
-    crypto:start(),
-    application:start(public_key),
-    ssl:start(),
-    inets:start(),
+-record(state, {
+    op_log_file                                 ::term(),
+    op_index                                    ::integer(),
+    server_id       =   <<"default_server">>    ::binary(),
+    rest_request_id                             ::term(),
+    client
+}).
 
+%%%===================================================================
+%%% API
+%%%===================================================================
+
+%% @doc Notifies an op log.
+-spec log_command(binary()) -> ok.
+log_command(Command) ->
+    gen_server:cast(?MODULE, {oplog, Command}).
+
+%% @doc Notifies a rest sync.
+-spec rest_sync(binary()) -> ok.
+rest_sync(Url) ->
+    gen_event:call(?MODULE, {rest_sync, Url}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Starts the server
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec(start_link() ->
+    {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
+start_link() ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+
+%%%===================================================================
+%%% gen_server callbacks
+%%%===================================================================
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Initializes the server
+%%
+%% @spec init(Args) -> {ok, State} |
+%%                     {ok, State, Timeout} |
+%%                     ignore |
+%%                     {stop, Reason}
+%% @end
+%%--------------------------------------------------------------------
+-spec(init(Args :: term()) ->
+    {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
+    {stop, Reason :: term()} | ignore).
+
+init([]) ->
     %% get start op log index from file
     StartOpIndex = get_last_op_log_index(),
 
@@ -130,62 +113,61 @@ init([]) ->
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Whenever an event manager receives an event sent using
-%% gen_event:notify/2 or gen_event:sync_notify/2, this function is
-%% called for each installed event handler to handle the event.
+%% Handling call messages
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec(handle_event(Event :: term(), State :: #state{}) ->
-    {ok, NewState :: #state{}} |
-    {ok, NewState :: #state{}, hibernate} |
-    {swap_handler, Args1 :: term(), NewState :: #state{},
-        Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
-    remove_handler).
-
-handle_event({oplog, Command = #edis_command{}}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex}) ->
-    OpIndex = LastOpIndex + 1,
-    BinOpLog = format_command_to_op_log(OpIndex, Command),
-    lager:debug("write OpIndex [~p]", [OpIndex]),
-    write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
-    {ok, State#state{op_index = OpIndex}};
-
-handle_event({rest_sync, Url}, State = #state{}) ->
+-spec(handle_call(Request :: term(), From :: {pid(), Tag :: term()},
+    State :: #state{}) ->
+    {reply, Reply :: term(), NewState :: #state{}} |
+    {reply, Reply :: term(), NewState :: #state{}, timeout() | hibernate} |
+    {noreply, NewState :: #state{}} |
+    {noreply, NewState :: #state{}, timeout() | hibernate} |
+    {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
+    {stop, Reason :: term(), NewState :: #state{}}).
+handle_call({rest_sync, Url}, _From, State = #state{}) ->
     RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
     lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
-    {ok, State#state{rest_request_id = RestRequestId}};
-
-handle_event(_Event, State) ->
-    {ok, State}.
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Whenever an event manager receives a request sent using
-%% gen_event:call/3,4, this function is called for the specified
-%% event handler to handle the request.
-%%
-%% @end
-%%--------------------------------------------------------------------
--spec(handle_call(Request :: term(), State :: #state{}) ->
-    {ok, Reply :: term(), NewState :: #state{}} |
-    {ok, Reply :: term(), NewState :: #state{}, hibernate} |
-    {swap_handler, Reply :: term(), Args1 :: term(), NewState :: #state{},
-        Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
-    {remove_handler, Reply :: term()}).
-handle_call(_Request, State) ->
-    Reply = ok,
-    {ok, Reply, State}.
+    {reply, {ok, Url, RestRequestId}, State#state{rest_request_id = RestRequestId}};
+handle_call(_Request, _From, State) ->
+    {reply, ok, State}.
 
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% This function is called for each installed event handler when
-%% an event manager receives any other message than an event or a
-%% synchronous request (or a system message).
+%% Handling cast messages
 %%
 %% @end
 %%--------------------------------------------------------------------
+-spec(handle_cast(Request :: term(), State :: #state{}) ->
+    {noreply, NewState :: #state{}} |
+    {noreply, NewState :: #state{}, timeout() | hibernate} |
+    {stop, Reason :: term(), NewState :: #state{}}).
+
+handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex}) ->
+    OpIndex = LastOpIndex + 1,
+    %BinOpLog = format_command_to_op_log(OpIndex, Command),
+    lager:debug("write OpIndex [~p]", [OpIndex]),
+    write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
+    {noreply, State#state{op_index = OpIndex}};
+
+handle_cast(_Request, State) ->
+    {noreply, State}.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% Handling all non call/cast messages
+%%
+%% @spec handle_info(Info, State) -> {noreply, State} |
+%%                                   {noreply, State, Timeout} |
+%%                                   {stop, Reason, State}
+%% @end
+%%--------------------------------------------------------------------
+-spec(handle_info(Info :: timeout() | term(), State :: #state{}) ->
+    {noreply, NewState :: #state{}} |
+    {noreply, NewState :: #state{}, timeout() | hibernate} |
+    {stop, Reason :: term(), NewState :: #state{}}).
 -spec(handle_info(Info :: term(), State :: #state{}) ->
     {ok, NewState :: #state{}} |
     {ok, NewState :: #state{}, hibernate} |
@@ -194,7 +176,7 @@ handle_call(_Request, State) ->
     remove_handler).
 handle_info({http, {_RequestId, stream_start, Headers}}, State) ->
     lager:debug("stream started [~p]", [Headers]),
-    {ok, State};
+    {noreply, State};
 handle_info({http, {_RequestId, stream, BinBodyPart}}, State = #state{client = Client}) ->
     lager:debug("stream body [~p]", [BinBodyPart]),
     try
@@ -203,29 +185,28 @@ handle_info({http, {_RequestId, stream, BinBodyPart}}, State = #state{client = C
     catch E:T ->
         lager:error("make command or run command [~p] failed [~p:~p]", [BinBodyPart, E ,T])
     end,
-    {ok, State};
+    {noreply, State};
 handle_info({http, {_RequestId, stream_end, _Headers}}, State) ->
     lager:debug("stream end", []),
-    {ok, State};
+    {noreply, State};
 handle_info(_Info, State) ->
     lager:debug("info [~p]", [_Info]),
-    {ok, State}.
+    {noreply, State}.
 
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
-%% Whenever an event handler is deleted from an event manager, this
-%% function is called. It should be the opposite of Module:init/1 and
-%% do any necessary cleaning up.
+%% This function is called by a gen_server when it is about to
+%% terminate. It should be the opposite of Module:init/1 and do any
+%% necessary cleaning up. When it returns, the gen_server terminates
+%% with Reason. The return value is ignored.
 %%
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
--spec(terminate(Args :: (term() | {stop, Reason :: term()} | stop |
-remove_handler | {error, {'EXIT', Reason :: term()}} |
-{error, term()}), State :: term()) -> term()).
-terminate(_Arg, _State = #state{op_log_file = OpLogFile}) ->
-    close_op_log_file(OpLogFile),
+-spec(terminate(Reason :: (normal | shutdown | {shutdown, term()} | term()),
+    State :: #state{}) -> term()).
+terminate(_Reason, _State) ->
     ok.
 
 %%--------------------------------------------------------------------
@@ -233,11 +214,12 @@ terminate(_Arg, _State = #state{op_log_file = OpLogFile}) ->
 %% @doc
 %% Convert process state when code is changed
 %%
+%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
 %% @end
 %%--------------------------------------------------------------------
 -spec(code_change(OldVsn :: term() | {down, term()}, State :: #state{},
     Extra :: term()) ->
-    {ok, NewState :: #state{}}).
+    {ok, NewState :: #state{}} | {error, Reason :: term()}).
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
@@ -245,51 +227,76 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type = ResultType}) ->
-    iolist_to_binary([make_sure_binay(OpIndex)
-        , ?OP_LOG_SEP, make_sure_binay(trunc(TimeStamp))
-        , ?OP_LOG_SEP, make_sure_binay(Db)
-        , ?OP_LOG_SEP, make_sure_binay(Cmd)
-        , ?OP_LOG_SEP, make_sure_binay(Group)
-        , ?OP_LOG_SEP, make_sure_binay(ResultType)
-    ] ++ lists:map(fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end, Args)
-        ++ "\n"
-    ).
+position_file_to_index(File, Index) when is_integer(Index) ->
+    case File of
+        none -> ok;
+        _ ->
+            file:position(File, {bof, 0}),
+            position_line_by_line(File, Index)
+    end,
+    File.
 
-make_command_from_op_log(BinOpLog) ->
-    [BinOpIndex, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
-    [BinTimeStamp, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
-    [BinDb, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
-    [BinCmd, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
-    [BinGroup, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
-    [BinResultType, Bin6] = binary:split(Bin5, ?OP_LOG_SEP),
-    Args = binary:split(Bin6, ?OP_LOG_SEP, [global]),
-
-    {binary_to_integer(BinOpIndex),
-        #edis_command{
-            timestamp = binary_to_integer(BinTimeStamp) + 0.0,
-            db = binary_to_integer(BinDb),
-            cmd = BinCmd,
-            group = binary_to_atom(BinGroup, latin1),
-            result_type = binary_to_atom(BinResultType, latin1),
-            args = Args
-        }}.
-
-
-
-make_sure_binay(Data) ->
-    if
-        is_integer(Data) ->
-            integer_to_binary(Data);
-        is_list(Data) ->
-            list_to_binary(Data);
-        is_atom(Data) ->
-            atom_to_binary(Data, latin1);
-        is_float(Data) ->
-            float_to_binary(Data);
-        true ->
-            Data
+position_line_by_line(File, Index) ->
+    case file:read_line(File) of
+        {ok, Line} ->
+            case edis_op_logger:split_index_from_op_log_line(Line) of
+                Index ->
+                    lager:info("found index [~p] in Line [~p]", [Index, Line]),
+                    ok;
+                N when N < Index ->
+                    position_line_by_line(File, Index);
+                N ->
+                    lager:error("splited index [~p] > specified index [~p], set back to previos line [~p]", [N, Index, Line]),
+                    {ok, _} = file:position(File, {cur, -byte_size(Line)}),
+                    ok
+            end
     end.
+
+%format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type = ResultType}) ->
+%    iolist_to_binary([make_sure_binay(OpIndex)
+%        , ?OP_LOG_SEP, make_sure_binay(trunc(TimeStamp))
+%        , ?OP_LOG_SEP, make_sure_binay(Db)
+%        , ?OP_LOG_SEP, make_sure_binay(Cmd)
+%        , ?OP_LOG_SEP, make_sure_binay(Group)
+%        , ?OP_LOG_SEP, make_sure_binay(ResultType)
+%    ] ++ lists:map(fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end, Args)
+%        ++ "\n"
+%    ).
+%
+%make_command_from_op_log(BinOpLog) ->
+%    [BinOpIndex, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
+%    [BinTimeStamp, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
+%    [BinDb, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
+%    [BinCmd, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
+%    [BinGroup, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
+%    [BinResultType, Bin6] = binary:split(Bin5, ?OP_LOG_SEP),
+%    Args = binary:split(Bin6, ?OP_LOG_SEP, [global]),
+%
+%    {binary_to_integer(BinOpIndex),
+%        #edis_command{
+%            timestamp = binary_to_integer(BinTimeStamp) + 0.0,
+%            db = binary_to_integer(BinDb),
+%            cmd = BinCmd,
+%            group = binary_to_atom(BinGroup, latin1),
+%            result_type = binary_to_atom(BinResultType, latin1),
+%            args = Args
+%        }}.
+%
+%
+%
+%make_sure_binay(Data) ->
+%    if
+%        is_integer(Data) ->
+%            integer_to_binary(Data);
+%        is_list(Data) ->
+%            list_to_binary(Data);
+%        is_atom(Data) ->
+%            atom_to_binary(Data, latin1);
+%        is_float(Data) ->
+%            float_to_binary(Data);
+%        true ->
+%            Data
+%    end.
 
 open_op_log_file_for_write() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,

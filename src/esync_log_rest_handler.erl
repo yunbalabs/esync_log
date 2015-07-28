@@ -84,32 +84,3 @@ get_req_index(Req) ->
                 ?DEFAULT_REQ_INDEX
             end
     end.
-
-position_file_to_index(File, Index) ->
-    case File of
-        none -> ok;
-        _ ->
-            case Index of
-                0 ->
-                    file:position(File, {bof, 0});
-                _ ->
-                    position_line_by_line(File, Index)
-            end
-    end,
-    File.
-
-position_line_by_line(File, Index) ->
-    case file:read_line(File) of
-        {ok, Line} ->
-            case edis_op_logger:split_index_from_op_log_line(Line) of
-                Index ->
-                    lager:info("found index [~p] in Line [~p]", [Index, Line]),
-                    ok;
-                N when N < Index ->
-                    position_line_by_line(File, Index);
-                N ->
-                    lager:error("splited index [~p] > specified index [~p], set back to previos line [~p]", [N, Index, Line]),
-                    {ok, _} = file:position(File, {cur, -byte_size(Line)}),
-                    ok
-            end
-    end.
