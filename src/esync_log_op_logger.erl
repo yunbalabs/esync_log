@@ -16,12 +16,13 @@
 
 -export([log_command/1, rest_sync/1]).
 
--export([open_op_log_file_for_read/0,
+-export([
+    open_read_logger/0,
+    read_logger_line/1,
+    position_logger_to_index/2,
+    close_logger/1,
     split_index_from_op_log_line/1
 ]).
-
-%-export([format_command_to_op_log/2,
-%    make_command_from_op_log/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -47,7 +48,7 @@
     op_index                                    ::integer(),
     server_id       =   <<"default_server">>    ::binary(),
     rest_request_id                             ::term(),
-    client
+    client                                      ::pid()
 }).
 
 %%%===================================================================
@@ -102,7 +103,7 @@ init([]) ->
     ServerId = ?DEFAULT_SERVER_ID,
 
     %% open log file to write op in
-    OpLogFile = open_op_log_file_for_write(),
+    OpLogFile = open_write_logger(),
 
     lager:debug("open log file [~p] start index [~p]", [?DEFAULT_OP_LOG_FILE_NAME, StartOpIndex]),
 
@@ -125,10 +126,13 @@ init([]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call({rest_sync, Url}, _From, State = #state{}) ->
+handle_call({rest_sync, Url}, _From, State = #state{rest_request_id = undefined}) ->
     RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
     lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
     {reply, {ok, Url, RestRequestId}, State#state{rest_request_id = RestRequestId}};
+handle_call({rest_sync, Url}, _From, State = #state{rest_request_id = RestRequestId}) ->
+    lager:debug("rest sync http request unfinished requstId [~p]", [RestRequestId]),
+    {reply, {error, Url, RestRequestId}, State};
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
@@ -177,7 +181,7 @@ handle_cast(_Request, State) ->
 handle_info({http, {_RequestId, stream_start, Headers}}, State) ->
     lager:debug("stream started [~p]", [Headers]),
     {noreply, State};
-handle_info({http, {_RequestId, stream, BinBodyPart}}, State = #state{client = Client}) ->
+handle_info({http, {RequestId, stream, BinBodyPart}}, State = #state{client = Client, rest_request_id = RequestId}) ->
     lager:debug("stream body [~p]", [BinBodyPart]),
     try
         {_Index, Command} = edis_op_logger:make_command_from_op_log(BinBodyPart),
@@ -186,11 +190,14 @@ handle_info({http, {_RequestId, stream, BinBodyPart}}, State = #state{client = C
         lager:error("make command or run command [~p] failed [~p:~p]", [BinBodyPart, E ,T])
     end,
     {noreply, State};
-handle_info({http, {_RequestId, stream_end, _Headers}}, State) ->
+handle_info({http, {RequestId, stream_end, _Headers}}, State = #state{client = _Client, rest_request_id = RequestId}) ->
     lager:debug("stream end", []),
     {noreply, State};
+handle_info({http, {RequestId, Event, _Headers}}, State = #state{client = _Client, rest_request_id = RequestId}) ->
+    lager:debug("stream unknown event [~p]", [Event]),
+    {noreply, State};
 handle_info(_Info, State) ->
-    lager:debug("info [~p]", [_Info]),
+    lager:debug("unknown info [~p]", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -227,7 +234,8 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-position_file_to_index(File, Index) when is_integer(Index) ->
+-spec(position_logger_to_index(term(), integer()) -> none | term()).
+position_logger_to_index(File, Index) when is_integer(Index) ->
     case File of
         none -> ok;
         _ ->
@@ -237,7 +245,7 @@ position_file_to_index(File, Index) when is_integer(Index) ->
     File.
 
 position_line_by_line(File, Index) ->
-    case file:read_line(File) of
+    case read_logger_line(File) of
         {ok, Line} ->
             case edis_op_logger:split_index_from_op_log_line(Line) of
                 Index ->
@@ -252,53 +260,8 @@ position_line_by_line(File, Index) ->
             end
     end.
 
-%format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type = ResultType}) ->
-%    iolist_to_binary([make_sure_binay(OpIndex)
-%        , ?OP_LOG_SEP, make_sure_binay(trunc(TimeStamp))
-%        , ?OP_LOG_SEP, make_sure_binay(Db)
-%        , ?OP_LOG_SEP, make_sure_binay(Cmd)
-%        , ?OP_LOG_SEP, make_sure_binay(Group)
-%        , ?OP_LOG_SEP, make_sure_binay(ResultType)
-%    ] ++ lists:map(fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end, Args)
-%        ++ "\n"
-%    ).
-%
-%make_command_from_op_log(BinOpLog) ->
-%    [BinOpIndex, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
-%    [BinTimeStamp, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
-%    [BinDb, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
-%    [BinCmd, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
-%    [BinGroup, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
-%    [BinResultType, Bin6] = binary:split(Bin5, ?OP_LOG_SEP),
-%    Args = binary:split(Bin6, ?OP_LOG_SEP, [global]),
-%
-%    {binary_to_integer(BinOpIndex),
-%        #edis_command{
-%            timestamp = binary_to_integer(BinTimeStamp) + 0.0,
-%            db = binary_to_integer(BinDb),
-%            cmd = BinCmd,
-%            group = binary_to_atom(BinGroup, latin1),
-%            result_type = binary_to_atom(BinResultType, latin1),
-%            args = Args
-%        }}.
-%
-%
-%
-%make_sure_binay(Data) ->
-%    if
-%        is_integer(Data) ->
-%            integer_to_binary(Data);
-%        is_list(Data) ->
-%            list_to_binary(Data);
-%        is_atom(Data) ->
-%            atom_to_binary(Data, latin1);
-%        is_float(Data) ->
-%            float_to_binary(Data);
-%        true ->
-%            Data
-%    end.
-
-open_op_log_file_for_write() ->
+-spec(open_read_logger() -> none | term()).
+open_write_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:open(FileName, [raw, write, append, binary]) of
         {ok, File} -> File;
@@ -307,18 +270,22 @@ open_op_log_file_for_write() ->
             none
     end.
 
--spec(open_op_log_file_for_read() -> none | term()).
-open_op_log_file_for_read() ->
+-spec(open_read_logger() -> {none,enoent | term()} | term()).
+open_read_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:open(FileName, [read, binary]) of
         {ok, File} -> File;
         {error, enoent} ->
-            lager:info("no op log idx file found, deault to index 0", []),
-            none;
-        Error ->
+            lager:info("no op log idx file found", []),
+            {none, enoent};
+        {error, Error} ->
             lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
-            none
+            {none, Error}
     end.
+
+-spec(read_logger_line(File) -> {ok, Data} | {error, eof}).
+read_logger_line(File) ->
+    file:read_line(File).
 
 write_bin_log_to_op_log_file(File, BinLog) ->
     case File of
@@ -326,27 +293,11 @@ write_bin_log_to_op_log_file(File, BinLog) ->
         _ -> file:write(File, BinLog)
     end.
 
-close_op_log_file(File) ->
+-spec(close_logger(term()) -> ok).
+close_logger(File) ->
     file:close(File).
 
 get_last_op_log_index() ->
-%    OpLogFileIndex =
-%        case file:read_file(?DEFAULT_LOG_IDX_FILE) of
-%            {ok, File} ->
-%                try
-%                    erlang:binary_to_integer(File)
-%                catch E:T ->
-%                    lager:error("binary to integer [~p] failed of [~p:~p]", [File, E, T]),
-%                    ?DEFAULT_START_OP_LOG_FILE_INDEX
-%                end;
-%            {error, enoent} ->
-%                lager:info("no op log idx file found, deault to index 0", []),
-%                ?DEFAULT_START_OP_LOG_FILE_INDEX;
-%            Error ->
-%                lager:info("read log idx file failed with error [~p]", [Error]),
-%                ?DEFAULT_START_OP_LOG_FILE_INDEX
-%        end,
-
     %% read to get current op log index first
     case open_op_log_file_for_read() of
         none ->
@@ -382,24 +333,6 @@ split_index_from_op_log_line(BinLastLine) ->
 -spec(read_last_line(term()) -> {ok, binary()} | {error, atom()}).  %% just as file:read_line
 read_last_line(File) ->
     read_last_line(<<"">>, File).
-
-%read_last_line(File, Number) ->
-%    case file:pread(File, {eof, Number}, Number) of
-%        {ok, Data} ->
-%            Lines = binary:split(Data, <<"\n">>, [global]),
-%            case length(Lines) of
-%                N when N>=3 ->
-%                    {ok, lists:nth(N-1, Lines)};
-%                _ ->
-%                    read_last_line(File, Number*2)
-%            end;
-%        {error, eof} -> file:read_line(File);
-%        eof -> file:read_line(File);
-%        Error ->
-%            lager:error("read_last_line/2 failed with error [~p]", [Error]),
-%            {ok, <<"">>}
-%    end.
-
 
 read_last_line(Line, File) ->
     case file:read_line(File) of

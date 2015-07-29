@@ -26,7 +26,7 @@ init(_, Req, _) ->
 
 info(response, Req, State) ->
     Index = get_req_index(Req),
-    Logger = esync_log_op_logger:get_logger(),
+    Logger = esync_log_op_logger:open_read_logger(),
     case esync_log_op_logger:position_logger_to_index(Logger, Index) of
         ok ->
             Req2 = cowboy_req:set([{resp_state, waiting_stream}], Req),

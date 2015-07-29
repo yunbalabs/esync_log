@@ -4,9 +4,9 @@
 %%% @doc
 %%%
 %%% @end
-%%% Created : 27. 七月 2015 下午4:27
+%%% Created : 29. 七月 2015 下午8:12
 %%%-------------------------------------------------------------------
--module(esync_log_sup).
+-module(esync_log_rest_request_sup).
 -author("thi").
 
 -behaviour(supervisor).
@@ -66,10 +66,10 @@ init([]) ->
     Shutdown = 2000,
     Type = worker,
 
-    OpLogger = {esync_log_op_logger, {esync_log_op_logger, start_link, []},
-        Restart, Shutdown, Type, [esync_log_op_logger]},
+    AChild = {'AName', {'AModule', start_link, []},
+        Restart, Shutdown, Type, ['AModule']},
 
-    {ok, {SupFlags, [OpLogger]}}.
+    {ok, {SupFlags, [AChild]}}.
 
 %%%===================================================================
 %%% Internal functions
