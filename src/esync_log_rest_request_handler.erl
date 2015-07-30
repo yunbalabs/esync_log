@@ -24,7 +24,7 @@
 
 -define(SERVER, ?MODULE).
 
--include_lib("esync_log.erl").
+-include("esync_log.hrl").
 
 -record(state, {
     rest_request_id                             ::term(),

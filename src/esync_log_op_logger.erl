@@ -35,7 +35,7 @@
 
 -define(SERVER, ?MODULE).
 
--include("esync_log.erl").
+-include("esync_log.hrl").
 
 -record(state, {
     op_log_file                                 ::term(),
