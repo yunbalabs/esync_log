@@ -17,10 +17,11 @@
 -export([log_command/1, rest_sync/1]).
 
 -export([
-    open_read_logger/0,
+    get_read_logger/0,
     read_logger_line/1,
     position_logger_to_index/2,
     close_logger/1,
+    get_latest_index/0,
     split_index_from_op_log_line/1
 ]).
 
@@ -34,20 +35,12 @@
 
 -define(SERVER, ?MODULE).
 
--define(DEFAULT_LOG_IDX_FILE, "oplog/op_log.idx").
--define(DEFAULT_START_OP_LOG_FILE_INDEX, 0).
--define(DEFAULT_SERVER_ID, "server1").
--define(DEFAULT_OP_COUNT_PER_LOG_FILE, 1000000).
-
--define(DEFAULT_OP_LOG_FILE_NAME, "oplog/op_log.log").
--define(OP_LOG_SEP, <<"\\">>).
--define(DEFAULT_OP_LOG_START_INDEX, 0).
+-include("esync_log.erl").
 
 -record(state, {
     op_log_file                                 ::term(),
     op_index                                    ::integer(),
     server_id       =   <<"default_server">>    ::binary(),
-    rest_request_id                             ::term(),
     client                                      ::pid()
 }).
 
@@ -126,13 +119,14 @@ init([]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call({rest_sync, Url}, _From, State = #state{rest_request_id = undefined}) ->
-    RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
-    lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
-    {reply, {ok, Url, RestRequestId}, State#state{rest_request_id = RestRequestId}};
-handle_call({rest_sync, Url}, _From, State = #state{rest_request_id = RestRequestId}) ->
-    lager:debug("rest sync http request unfinished requstId [~p]", [RestRequestId]),
-    {reply, {error, Url, RestRequestId}, State};
+handle_call(get_read_logger, _From, State) ->
+    Result = open_and_ensure_read_logger(),
+    lager:debug("get_or_create_read_logger [~p]", [Result]),
+    {reply, Result, State};
+handle_call(get_latest_index, _From, State) ->
+    Result = get_last_op_log_index(),
+    lager:debug("get_latest_index [~p]", [Result]),
+    {reply, Result, State};
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
@@ -178,24 +172,6 @@ handle_cast(_Request, State) ->
     {swap_handler, Args1 :: term(), NewState :: #state{},
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
-handle_info({http, {_RequestId, stream_start, Headers}}, State) ->
-    lager:debug("stream started [~p]", [Headers]),
-    {noreply, State};
-handle_info({http, {RequestId, stream, BinBodyPart}}, State = #state{client = Client, rest_request_id = RequestId}) ->
-    lager:debug("stream body [~p]", [BinBodyPart]),
-    try
-        {_Index, Command} = edis_op_logger:make_command_from_op_log(BinBodyPart),
-        edis_db:run(Client, Command)
-    catch E:T ->
-        lager:error("make command or run command [~p] failed [~p:~p]", [BinBodyPart, E ,T])
-    end,
-    {noreply, State};
-handle_info({http, {RequestId, stream_end, _Headers}}, State = #state{client = _Client, rest_request_id = RequestId}) ->
-    lager:debug("stream end", []),
-    {noreply, State};
-handle_info({http, {RequestId, Event, _Headers}}, State = #state{client = _Client, rest_request_id = RequestId}) ->
-    lager:debug("stream unknown event [~p]", [Event]),
-    {noreply, State};
 handle_info(_Info, State) ->
     lager:debug("unknown info [~p]", [_Info]),
     {noreply, State}.
@@ -260,31 +236,44 @@ position_line_by_line(File, Index) ->
             end
     end.
 
--spec(open_read_logger() -> none | term()).
+%% API call with block
+-spec(open_and_ensure_read_logger() -> none | term()).
+open_and_ensure_read_logger() ->
+    FileName = ?DEFAULT_OP_LOG_FILE_NAME,
+    case file:write_file(FileName, <<>>, [exclusive, raw, binary]) of
+        ok ->
+            lager:info("create file [~p] succ", [FileName]),
+            ok;
+        Error ->
+            lager:error("create file [~p] failed [~P]", [FileName, Error])
+    end,
+    open_write_logger().
+
+-spec(open_write_logger() -> {ok, term()} | {error, term()}).
 open_write_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:open(FileName, [raw, write, append, binary]) of
-        {ok, File} -> File;
-        Error ->
+        {ok, File} -> {ok, File};
+        {error, Error} ->
             lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
-            none
+            {error, Error}
     end.
 
--spec(open_read_logger() -> {none,enoent | term()} | term()).
+-spec(open_read_logger() -> {ok, term()} | {error, term()}).
 open_read_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:open(FileName, [read, binary]) of
-        {ok, File} -> File;
+        {ok, File} -> {ok, File};
         {error, enoent} ->
             lager:info("no op log idx file found", []),
-            {none, enoent};
+            {error, enoent};
         {error, Error} ->
             lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
-            {none, Error}
+            {error, Error}
     end.
 
--spec(read_logger_line(File) -> {ok, Data} | {error, eof}).
-read_logger_line(File) ->
+-spec(read_logger_line(File) -> {ok, Data} | eof | {error, term()}).
+read_logger_line(File) when is_pid(File)->
     file:read_line(File).
 
 write_bin_log_to_op_log_file(File, BinLog) ->
