@@ -55,7 +55,7 @@ start_link() ->
     }} |
     ignore |
     {error, Reason :: term()}).
-init([]) ->
+init(Args) ->
     RestartStrategy = one_for_one,
     MaxRestarts = 1000,
     MaxSecondsBetweenRestarts = 3600,
@@ -66,8 +66,8 @@ init([]) ->
     Shutdown = 2000,
     Type = worker,
 
-    AChild = {'AName', {'AModule', start_link, []},
-        Restart, Shutdown, Type, ['AModule']},
+    AChild = {esync_log_rest_request_handler, {esync_log_rest_request_handler, start_link, Args},
+        Restart, Shutdown, Type, [esync_log_rest_request_handler]},
 
     {ok, {SupFlags, [AChild]}}.
 

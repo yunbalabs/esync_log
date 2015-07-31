@@ -252,7 +252,7 @@ open_and_ensure_read_logger() ->
 -spec(open_write_logger() -> {ok, term()} | {error, term()}).
 open_write_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
-    case file:open(FileName, [raw, write, append, binary]) of
+    case file:open(FileName, [raw, write, append, binary, delayed_write]) of
         {ok, File} -> {ok, File};
         {error, Error} ->
             lager:error("open op log file [~p] failed [~P]", [FileName, Error]),

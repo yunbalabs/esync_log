@@ -28,7 +28,9 @@
 
 -record(state, {
     rest_request_id                             ::term(),
-    op_log_receiver                             ::pid() | term()
+    op_log_receiver                             ::pid() | term(),
+    rest_host                                   ::string(),
+    rest_port                                   ::integer()
 }).
 
 %%%===================================================================
@@ -43,8 +45,8 @@
 %%--------------------------------------------------------------------
 -spec(start_link(list()) ->
     {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link([Receiver]) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], [Receiver]).
+start_link(Args) ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], Args).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -64,9 +66,25 @@ start_link([Receiver]) ->
 -spec(init(Args :: term()) ->
     {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term()} | ignore).
-init([Receiver]) ->
+init(Args) ->
+    [Receiver, Host, Port, Index] =
+        case Args of
+            [Receiver] ->
+                Host = esync_log:get_config(esync_log_host),
+                Port = esync_log:get_config(esync_log_port),
+                Index = get_rest_request_index_from_logger();
+            [Receiver, Host, Port] ->
+                Index = get_rest_request_index_from_logger(),
+                [Receiver, Host, Port, Index]
+        end,
+    Url = esync_log:make_up_rest_rul(Host, Port, Index),
+    RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
+    lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
     {ok, #state{
+        rest_host = Host,
+        rest_port = Port,
         op_log_receiver = Receiver,
+        rest_request_id = RestRequestId
     }}.
 
 %%--------------------------------------------------------------------
@@ -197,3 +215,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+get_rest_request_index_from_logger() ->
+    try
+        gen_server:call(esync_log_op_logger, get_latest_index)
+    catch
+        E:T ->
+            lager:error("gen server call get_latest_index failed [~p:~p]", [E, T]),
+            ?DEFAULT_OP_LOG_START_INDEX
+    end.
