@@ -8,7 +8,6 @@
 %%%-------------------------------------------------------------------
 -author("thi").
 
--define(DEFAULT_LOG_IDX_FILE, "oplog/op_log.idx").
 -define(DEFAULT_START_OP_LOG_FILE_INDEX, 0).
 -define(DEFAULT_SERVER_ID, "server1").
 -define(DEFAULT_OP_COUNT_PER_LOG_FILE, 1000000).

@@ -83,6 +83,13 @@ start_link() ->
     {stop, Reason :: term()} | ignore).
 
 init([]) ->
+    crypto:start(),
+    application:start(public_key),
+    ssl:start(),
+    inets:start(),
+
+    start_cowboy(),
+
     %% get start op log index from file
     StartOpIndex = get_last_op_log_index(),
 
@@ -140,7 +147,8 @@ handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index 
     OpIndex = LastOpIndex + 1,
     %BinOpLog = format_command_to_op_log(OpIndex, Command),
     lager:debug("write OpIndex [~p]", [OpIndex]),
-    write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
+    Line = iolist_to_binary([integer_to_binary(OpIndex), ?OP_LOG_SEP, BinOpLog, "\n"]),
+    write_bin_log_to_op_log_file(OpLogFile, Line),
     {noreply, State#state{op_index = OpIndex}};
 
 handle_cast(_Request, State) ->
@@ -332,3 +340,19 @@ is_full_line(Line) when is_binary(Line) ->
                 _ -> false
             end
     end.
+
+
+
+start_cowboy() ->
+    RestfulArgs = {},
+    ListenUrlPath = esync_log:get_config(rest_listen_url_path, "/rest/oplog/[...]"),
+    Dispatch = cowboy_router:compile([
+        {'_', [
+            {ListenUrlPath, esync_log_rest_handler, [RestfulArgs]}
+        ]}
+    ]),
+    RestWorkerCount = esync_log:get_config(rest_worker_count, 100),
+    RestListenPort = esync_log:get_config(rest_listen_port, 8766),
+    {ok, _} = cowboy:start_http(http, RestWorkerCount, [{port, RestListenPort}], [
+        {env, [{dispatch, Dispatch}]}
+    ]).

@@ -39,8 +39,8 @@
     {ok, pid(), State :: term()} |
     {error, Reason :: term()}).
 start(_StartType, _StartArgs) ->
-    start_cowboy(),
-    case esync_lop_sup:start_link() of
+    application:start(lager),
+    case esync_log_sup:start_link() of
         {ok, Pid} ->
             {ok, Pid};
         Error ->
@@ -63,20 +63,6 @@ stop(_State) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-start_cowboy() ->
-    RestfulArgs = {},
-    ListenUrlPath = esync_log:get_config(rest_listen_url_path, "/rest/oplog/[...]"),
-    Dispatch = cowboy_router:compile([
-        {'_', [
-            {ListenUrlPath, esync_log_rest_handler, [RestfulArgs]}
-        ]}
-    ]),
-    RestWorkerCount = esync_log:get_config(rest_worker_count, 100),
-    RestListenPort = esync_log:get_config(rest_listen_port, 8766),
-    {ok, _} = cowboy:start_http(http, RestWorkerCount, [{port, RestListenPort}], [
-        {env, [{dispatch, Dispatch}]}
-    ]).
 
 get_config(Field, Default) ->
     case application:get_env(esync_log, Field) of
