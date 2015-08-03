@@ -14,15 +14,14 @@
 %% API
 -export([start_link/0]).
 
--export([log_command/1, rest_sync/1]).
+-export([log_command/1]).
 
 -export([
-    get_read_logger/0,
     read_logger_line/1,
     position_logger_to_index/2,
     close_logger/1,
-    get_latest_index/0,
-    split_index_from_op_log_line/1
+    split_index_from_op_log_line/1,
+    is_full_line/1
 ]).
 
 %% gen_server callbacks
@@ -52,11 +51,6 @@
 -spec log_command(binary()) -> ok.
 log_command(Command) ->
     gen_server:cast(?MODULE, {oplog, Command}).
-
-%% @doc Notifies a rest sync.
--spec rest_sync(binary()) -> ok.
-rest_sync(Url) ->
-    gen_event:call(?MODULE, {rest_sync, Url}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -123,8 +117,8 @@ handle_call(get_read_logger, _From, State) ->
     Result = open_and_ensure_read_logger(),
     lager:debug("get_or_create_read_logger [~p]", [Result]),
     {reply, Result, State};
-handle_call(get_latest_index, _From, State) ->
-    Result = get_last_op_log_index(),
+handle_call(get_latest_index, _From, State = #state{op_index = LastOpIndex}) ->
+    Result = LastOpIndex,
     lager:debug("get_latest_index [~p]", [Result]),
     {reply, Result, State};
 handle_call(_Request, _From, State) ->
@@ -166,12 +160,6 @@ handle_cast(_Request, State) ->
     {noreply, NewState :: #state{}} |
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
--spec(handle_info(Info :: term(), State :: #state{}) ->
-    {ok, NewState :: #state{}} |
-    {ok, NewState :: #state{}, hibernate} |
-    {swap_handler, Args1 :: term(), NewState :: #state{},
-        Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
-    remove_handler).
 handle_info(_Info, State) ->
     lager:debug("unknown info [~p]", [_Info]),
     {noreply, State}.
@@ -253,26 +241,26 @@ open_and_ensure_read_logger() ->
 open_write_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:open(FileName, [raw, write, append, binary, delayed_write]) of
-        {ok, File} -> {ok, File};
+        {ok, File} -> File;
         {error, Error} ->
             lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
-            {error, Error}
+            none
     end.
 
 -spec(open_read_logger() -> {ok, term()} | {error, term()}).
 open_read_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:open(FileName, [read, binary]) of
-        {ok, File} -> {ok, File};
+        {ok, File} -> File;
         {error, enoent} ->
-            lager:info("no op log idx file found", []),
-            {error, enoent};
+            lager:info("no op log file found", []),
+            none;
         {error, Error} ->
             lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
-            {error, Error}
+            none
     end.
 
--spec(read_logger_line(File) -> {ok, Data} | eof | {error, term()}).
+-spec(read_logger_line(pid()) -> {ok, binary()} | eof | {error, term()}).
 read_logger_line(File) when is_pid(File)->
     file:read_line(File).
 
@@ -288,7 +276,7 @@ close_logger(File) ->
 
 get_last_op_log_index() ->
     %% read to get current op log index first
-    case open_op_log_file_for_read() of
+    case open_read_logger() of
         none ->
             lager:error("read log idx file failed", []),
             ?DEFAULT_OP_LOG_START_INDEX;
@@ -332,4 +320,15 @@ read_last_line(Line, File) ->
         Error ->
             lager:error("read_last_line/2 failed with error [~p]", [Error]),
             {ok, Line}
+    end.
+
+-spec(is_full_line(binary()) -> boolean()).
+is_full_line(Line) when is_binary(Line) ->
+    case byte_size(Line) of
+        0 -> false;
+        _ ->
+            case binary:last(Line) of
+                10 -> true;
+                _ -> false
+            end
     end.

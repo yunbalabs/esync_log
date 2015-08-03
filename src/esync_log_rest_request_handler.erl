@@ -69,13 +69,14 @@ start_link(Args) ->
 init(Args) ->
     [Receiver, Host, Port, Index] =
         case Args of
-            [Receiver] ->
-                Host = esync_log:get_config(esync_log_host),
-                Port = esync_log:get_config(esync_log_port),
-                Index = get_rest_request_index_from_logger();
-            [Receiver, Host, Port] ->
-                Index = get_rest_request_index_from_logger(),
-                [Receiver, Host, Port, Index]
+            [AReceiver] ->
+                AHost = esync_log:get_config(esync_log_host),
+                APort = esync_log:get_config(esync_log_port),
+                AIndex = get_rest_request_index_from_logger(),
+                [AReceiver, AHost, APort, AIndex];
+            [AReceiver, AHost, APort] ->
+                AIndex = get_rest_request_index_from_logger(),
+                [AReceiver, AHost, APort, AIndex]
         end,
     Url = esync_log:make_up_rest_rul(Host, Port, Index),
     RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
@@ -151,7 +152,7 @@ handle_cast(_Request, State) ->
     {noreply, NewState :: #state{}} |
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_info({http, {_RequestId, stream_start, Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
+handle_info({http, {RequestId, stream_start, Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
     lager:debug("stream started [~p]", [Headers]),
     try
         Receiver ! op_log_start
@@ -177,6 +178,12 @@ handle_info({http, {RequestId, stream_end, _Headers}}, State = #state{op_log_rec
     {noreply, State};
 handle_info({http, {RequestId, Event, _Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
     lager:debug("stream unknown event [~p]", [Event]),
+    try
+        Receiver ! {op_log_exception, Event}
+    catch E:T ->
+        lager:error("send op_log_end to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
+    end,
+
     {noreply, State};
 handle_info(_Info, State) ->
     lager:debug("unknown info [~p]", [_Info]),

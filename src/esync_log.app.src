@@ -1,0 +1,16 @@
+{application, esync_log, [
+    {description, "Erlang log synchronize for (r)edis."},
+    {vsn, "1.0.0"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto
+    ]},
+    {mod, {esync_log, []}},
+    {env, [{rest_url, "/rest/oplog/"},
+        {rest_request_host, "127.0.0.1"},
+        {rest_request_port, 8766},
+        {rest_listen_port, 8766}]}
+]}.
+

@@ -17,7 +17,8 @@
 -export([terminate/3]).
 
 -record(state, {
-    logger :: term()
+    logger              ::  term(),
+    buf     = <<>>      ::  binary()
 }).
 
 init(_, Req, _) ->
@@ -35,15 +36,22 @@ info(response, Req, State) ->
             {loop, Req3, State#state{logger = Logger}};
         error ->
             {ok, Req2} = cowboy_req:reply(413, [], <<"Index too big">>, Req),
-            {ok, Req, State#state{logger = none}}
+            {ok, Req2, State#state{logger = none}}
     end;
 
-info(send_line, Req, State = #state{logger = Logger}) ->
+info(send_line, Req, State = #state{logger = Logger, buf = Buf}) ->
     case esync_log_op_logger:get_line(Logger) of
         {ok, Line} ->
-            send_line(Req, Line),
-            trigger_next_line(),
-            {loop, Req, State};
+            AllBuf = <<Buf, Line>>,
+            case esync_log_op_logger:is_full_line(AllBuf) of
+                true ->
+                    send_line(Req, AllBuf),
+                    trigger_next_line(),
+                    {loop, Req, State#state{buf = <<>>}};
+                _ ->
+                    trigger_next_line(),
+                    {loop, Req, State#state{buf = AllBuf}}
+            end;
         eof ->
             trigger_next_line(),
             {loop, Req, State};
