@@ -69,7 +69,7 @@ terminate(Reason, _, _State = #state{logger = Logger}) ->
     ok.
 
 trigger_next_line() ->
-    timer:sleep(500),
+    %%timer:sleep(500),
     self() ! send_line.
 
 send_line(Req, Line) ->

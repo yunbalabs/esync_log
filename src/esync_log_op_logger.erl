@@ -39,7 +39,7 @@
 -record(state, {
     op_log_file                                 ::term(),
     op_index                                    ::integer(),
-    server_id       =   <<"default_server">>    ::binary(),
+    server_id                                   ::binary(),
     client                                      ::pid()
 }).
 
@@ -83,18 +83,11 @@ start_link() ->
     {stop, Reason :: term()} | ignore).
 
 init([]) ->
-    crypto:start(),
-    application:start(public_key),
-    ssl:start(),
-    inets:start(),
-
-    start_cowboy(),
-
     %% get start op log index from file
     StartOpIndex = get_last_op_log_index(),
 
     %% get server id
-    ServerId = ?DEFAULT_SERVER_ID,
+    ServerId = get_server_id(),
 
     %% open log file to write op in
     OpLogFile = open_write_logger(),
@@ -143,11 +136,15 @@ handle_call(_Request, _From, State) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
 
-handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex}) ->
+handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = ServerId}) ->
     OpIndex = LastOpIndex + 1,
     %BinOpLog = format_command_to_op_log(OpIndex, Command),
     lager:debug("write OpIndex [~p]", [OpIndex]),
-    Line = iolist_to_binary([integer_to_binary(OpIndex), ?OP_LOG_SEP, BinOpLog, "\n"]),
+    Line = iolist_to_binary([
+        integer_to_binary(OpIndex), ?OP_LOG_SEP
+        ,ServerId, ?OP_LOG_SEP
+        ,BinOpLog, "\n"
+    ]),
     write_bin_log_to_op_log_file(OpLogFile, Line),
     {noreply, State#state{op_index = OpIndex}};
 
@@ -238,10 +235,10 @@ open_and_ensure_read_logger() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:write_file(FileName, <<>>, [exclusive, raw, binary]) of
         ok ->
-            lager:info("create file [~p] succ", [FileName]),
+            lager:info("create log file [~p] succ", [FileName]),
             ok;
         Error ->
-            lager:error("create file [~p] failed [~P]", [FileName, Error])
+            lager:error("create log file [~p] failed [~P]", [FileName, Error])
     end,
     open_write_logger().
 
@@ -341,18 +338,26 @@ is_full_line(Line) when is_binary(Line) ->
             end
     end.
 
+get_server_id() ->
+    FileName = ?DEFAULT_SERVER_ID_FILE_NAME,
+    case file:read_file(FileName) of
+        {ok, ServerId} ->
+            lager:debug("got server id from file [~p]", [ServerId]),
+            ServerId;
+        {error, Error} ->
+            lager:info("open server id file [~p] failed [~p], recreate it!", [FileName, Error]),
+            ServerId = gen_server_id(),
+            case file:write_file(FileName, ServerId, [exclusive, raw, binary]) of
+                ok ->
+                    lager:info("create server id file [~p] succ", [FileName]),
+                    ok;
+                Error ->
+                    lager:error("create server id file [~p] failed [~P]", [FileName, Error])
+            end,
+            ServerId
+    end.
 
-
-start_cowboy() ->
-    RestfulArgs = {},
-    ListenUrlPath = esync_log:get_config(rest_listen_url_path, "/rest/oplog/[...]"),
-    Dispatch = cowboy_router:compile([
-        {'_', [
-            {ListenUrlPath, esync_log_rest_handler, [RestfulArgs]}
-        ]}
-    ]),
-    RestWorkerCount = esync_log:get_config(rest_worker_count, 100),
-    RestListenPort = esync_log:get_config(rest_listen_port, 8766),
-    {ok, _} = cowboy:start_http(http, RestWorkerCount, [{port, RestListenPort}], [
-        {env, [{dispatch, Dispatch}]}
-    ]).
+gen_server_id() ->
+    %% generated server id is based on nodename & ip & timestamp
+    HashInt = erlang:phash2([node(), inet:getif(), os:timestamp()]),
+    integer_to_binary(HashInt).
