@@ -142,7 +142,7 @@ handle_info({http, {RequestId, stream_start, Headers}}, State = #state{op_log_re
     {noreply, State#state{rest_buf = <<>>}};
 handle_info({http, {RequestId, stream, BinBodyPart}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId, rest_buf = Buf}) ->
     lager:debug("stream body [~p]", [BinBodyPart]),
-    AllBody = <<Buf, BinBodyPart>>,
+    AllBody = <<Buf/binary, BinBodyPart/binary>>,
     Rest = handle_rest_response(Receiver, AllBody),
     {noreply, State#state{rest_buf = Rest}};
 handle_info({http, {RequestId, stream_end, _Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->

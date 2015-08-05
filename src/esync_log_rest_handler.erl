@@ -28,8 +28,7 @@ init(_, Req, _) ->
     {loop, Req, #state{}, hibernate}.
 
 info(response, Req, State) ->
-    Index = get_req_index(Req),
-    ServerId = get_req_server_id(Req),
+    {Index, ServerId} = get_req_index_serverId(Req),
     Logger = esync_log_op_logger:open_read_logger(),
     case esync_log_op_logger:position_logger_to_index(Logger, Index) of
         ok ->
@@ -43,9 +42,9 @@ info(response, Req, State) ->
     end;
 
 info(send_line, Req, State = #state{logger = Logger, buf = Buf, server_id = ServerId}) ->
-    case esync_log_op_logger:get_line(Logger) of
+    case esync_log_op_logger:read_logger_line(Logger) of
         {ok, Line} ->
-            AllBuf = <<Buf, Line>>,
+            AllBuf = <<Buf/binary, Line/binary>>,
             case esync_log_op_logger:is_full_line(AllBuf) of
                 true ->
                     case esync_log_op_logger:get_line_server_id(AllBuf) == ServerId of
@@ -84,31 +83,9 @@ send_line(Req, Line) ->
     cowboy_req:chunk(Line, Req),
     ok.
 
-get_req_index(Req) ->
+get_req_index_serverId(Req) ->
     {_Method, Req2} = cowboy_req:method(Req),
-    {BinIndex, _Req3} = cowboy_req:qs_val(<<"index">>, Req2),
-    lager:debug("Index [~p]", [BinIndex]),
-    case BinIndex of
-        <<"undefined">> ->
-            lager:info("index argument not found, set to default index [~p]", [?DEFAULT_REQ_INDEX]),
-            ?DEFAULT_REQ_INDEX;
-        _ ->
-            try
-                binary_to_integer(BinIndex)
-            catch E:T ->
-                lager:error("parge binary index [~p] failed [~p:~p], set default index [~p]", [BinIndex, E, T, ?DEFAULT_REQ_INDEX]),
-                ?DEFAULT_REQ_INDEX
-            end
-    end.
-
-get_req_server_id(Req) ->
-    {_Method, Req2} = cowboy_req:method(Req),
-    {ServerId, _Req3} = cowboy_req:qs_val(<<"serverId">>, Req2),
-    lager:debug("serverId [~p]", [ServerId]),
-    case ServerId of
-        <<"undefined">> ->
-            lager:info("serverId argument not found, set to default serverid [~p]", [?DEFAULT_SERVER_ID]),
-            ?DEFAULT_SERVER_ID;
-        _ ->
-            ServerId
-    end.
+    {ServerId, Req3} = cowboy_req:qs_val(<<"serverId">>, Req2, ?DEFAULT_SERVER_ID),
+    {BinIndex, _Req4} = cowboy_req:qs_val(<<"index">>, Req3, integer_to_binary(?DEFAULT_REQ_INDEX)),
+    lager:debug("Index [~p], ServerId [~p]", [BinIndex, ServerId]),
+    {binary_to_integer(BinIndex), ServerId}.
