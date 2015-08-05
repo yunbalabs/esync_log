@@ -8,7 +8,8 @@
 %%%-------------------------------------------------------------------
 -module(esync_log_rest_handler).
 -author("thi").
--define(DEFAULT_REQ_INDEX, 0).
+
+-include("esync_log.hrl").
 
 -behaviour(cowboy_loop_handler).
 
@@ -17,8 +18,9 @@
 -export([terminate/3]).
 
 -record(state, {
-    logger              ::  term(),
-    buf     = <<>>      ::  binary()
+    logger                  ::  term(),
+    buf         = <<>>      ::  binary(),
+    server_id   = undefined :: binary()
 }).
 
 init(_, Req, _) ->
@@ -27,25 +29,31 @@ init(_, Req, _) ->
 
 info(response, Req, State) ->
     Index = get_req_index(Req),
+    ServerId = get_req_server_id(Req),
     Logger = esync_log_op_logger:open_read_logger(),
     case esync_log_op_logger:position_logger_to_index(Logger, Index) of
         ok ->
             Req2 = cowboy_req:set([{resp_state, waiting_stream}], Req),
             {ok, Req3} = cowboy_req:chunked_reply(200, Req2),
             trigger_next_line(),
-            {loop, Req3, State#state{logger = Logger}};
+            {loop, Req3, State#state{logger = Logger, server_id = ServerId}};
         error ->
             {ok, Req2} = cowboy_req:reply(413, [], <<"Index too big">>, Req),
-            {ok, Req2, State#state{logger = none}}
+            {ok, Req2, State#state{logger = none, server_id = ServerId}}
     end;
 
-info(send_line, Req, State = #state{logger = Logger, buf = Buf}) ->
+info(send_line, Req, State = #state{logger = Logger, buf = Buf, server_id = ServerId}) ->
     case esync_log_op_logger:get_line(Logger) of
         {ok, Line} ->
             AllBuf = <<Buf, Line>>,
             case esync_log_op_logger:is_full_line(AllBuf) of
                 true ->
-                    send_line(Req, AllBuf),
+                    case esync_log_op_logger:get_line_server_id(AllBuf) == ServerId of
+                        true ->
+                            lager:debug("request server id equal with log server id [~p], ignore this line [~p]", [ServerId, AllBuf]);
+                        false ->
+                            send_line(Req, AllBuf)
+                    end,
                     trigger_next_line(),
                     {loop, Req, State#state{buf = <<>>}};
                 _ ->
@@ -91,4 +99,16 @@ get_req_index(Req) ->
                 lager:error("parge binary index [~p] failed [~p:~p], set default index [~p]", [BinIndex, E, T, ?DEFAULT_REQ_INDEX]),
                 ?DEFAULT_REQ_INDEX
             end
+    end.
+
+get_req_server_id(Req) ->
+    {_Method, Req2} = cowboy_req:method(Req),
+    {ServerId, _Req3} = cowboy_req:qs_val(<<"serverId">>, Req2),
+    lager:debug("serverId [~p]", [ServerId]),
+    case ServerId of
+        <<"undefined">> ->
+            lager:info("serverId argument not found, set to default serverid [~p]", [?DEFAULT_SERVER_ID]),
+            ?DEFAULT_SERVER_ID;
+        _ ->
+            ServerId
     end.

@@ -12,6 +12,10 @@
 -behaviour(application).
 
 %% API
+-export([log_command/1, log_sync_command/3]).
+
+-export([start_sync/0, start_sync/2, cancel_sync/0]).
+
 -export([get_config/2, make_rest_request_url/4]).
 
 %% Application callbacks
@@ -99,3 +103,26 @@ start_cowboy() ->
     {ok, _} = cowboy:start_http(http, RestWorkerCount, [{port, RestListenPort}], [
         {env, [{dispatch, Dispatch}]}
     ]).
+
+%% @doc handle an op log.
+-spec log_command(binary()) -> ok.
+log_command(Command) ->
+    esync_log_op_logger:log_command(Command).
+
+%% @doc handle an sync op log with index.
+-spec log_sync_command(binary(), integer(), binary()) -> ok.
+log_sync_command(ServerId, Index, Command) ->
+    esync_log_op_logger:log_sync_command(ServerId, Index, Command).
+
+%% @doc handle an sync op log with index.
+-spec start_sync(string(), integer()) -> ok.
+start_sync(Host, Port) ->
+    esync_log_op_logger:start_sync(Host, Port).
+start_sync() ->
+    Host = esync_log:get_config(esync_log_host, "localhost"),
+    Port = esync_log:get_config(esync_log_port, 8766),
+    start_sync(Host, Port).
+
+cancel_sync() ->
+    esync_log_op_logger:cancel_sync().
+

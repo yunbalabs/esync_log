@@ -29,8 +29,7 @@
 -record(state, {
     rest_request_id                             ::term(),
     op_log_receiver                             ::pid() | term(),
-    rest_host                                   ::string(),
-    rest_port                                   ::integer(),
+    rest_url                                    ::string(),
     rest_buf            = <<>>                  ::binary()
 }).
 
@@ -68,26 +67,7 @@ start_link(Args) ->
     {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term()} | ignore).
 init([]) ->
-    [Receiver, Host, Port, Index] =
-        case Args of
-            [AReceiver] ->
-                AHost = esync_log:get_config(esync_log_host, "localhost"),
-                APort = esync_log:get_config(esync_log_port, 8766),
-                AIndex = get_rest_request_index_from_logger(),
-                [AReceiver, AHost, APort, AIndex];
-            [AReceiver, AHost, APort] ->
-                AIndex = get_rest_request_index_from_logger(),
-                [AReceiver, AHost, APort, AIndex]
-        end,
-    Url = esync_log:make_up_rest_rul(Host, Port, Index),
-    RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
-    lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
-    {ok, #state{
-        rest_host = Host,
-        rest_port = Port,
-        op_log_receiver = Receiver,
-        rest_request_id = RestRequestId
-    }}.
+   {ok, #state{}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -104,21 +84,11 @@ init([]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call({rest_sync, {ServerId, Host, Port}}, _From, State = #state{rest_request_id = undefined}) ->
-    Index =
-        try
-            gen_server:call(esync_log_op_logger, get_latest_index)
-        catch
-            E:T ->
-                lager:error("gen server call get_latest_index failed [~p:~p]", [E, T]),
-                ?DEFAULT_OP_LOG_START_INDEX
-        end,
-    handle_call({rest_sync, ServerId, Host, Port, Index}, _From, State);
-handle_call({rest_sync, {ServerId, Host, Port, Index}}, _From, State = #state{rest_request_id = undefined}) ->
-    Url = esync_log:make_up_rest_rul(Host, Port, ServerId, Index),
-    RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
-    lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
-    {reply, {ok, Url, RestRequestId}, State#state{rest_request_id = RestRequestId}};
+handle_call({rest_sync, {ServerId, Index, Host, Port}}, _From, State = #state{rest_request_id = undefined}) ->
+    RestUrl = esync_log:make_up_rest_rul(Host, Port, ServerId, Index),
+    RestRequestId = httpc:request(get, {RestUrl, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
+    lager:debug("rest sync to url [~p] requstId [~p]", [RestUrl, RestRequestId]),
+    {reply, {ok, RestUrl, RestRequestId}, State#state{rest_url = RestUrl, rest_request_id = RestRequestId}};
 handle_call({rest_sync, Args}, _From, State = #state{rest_request_id = RestRequestId}) ->
     lager:debug("rest sync http now still unfinished requstId [~p]", [RestRequestId]),
     {reply, {error, Args, RestRequestId}, State};
@@ -165,7 +135,7 @@ handle_cast(_Request, State) ->
 handle_info({http, {RequestId, stream_start, Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
     lager:debug("stream started [~p]", [Headers]),
     try
-        Receiver ! op_log_start
+        Receiver ! sync_log_start
     catch E:T ->
         lager:error("send op_log_start to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
     end,
@@ -178,7 +148,7 @@ handle_info({http, {RequestId, stream, BinBodyPart}}, State = #state{op_log_rece
 handle_info({http, {RequestId, stream_end, _Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
     lager:debug("stream end", []),
     try
-        Receiver ! op_log_end
+        Receiver ! sync_log_end
     catch E:T ->
         lager:error("send op_log_end to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
     end,
@@ -186,7 +156,7 @@ handle_info({http, {RequestId, stream_end, _Headers}}, State = #state{op_log_rec
 handle_info({http, {RequestId, Event, _Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
     lager:debug("stream unknown event [~p]", [Event]),
     try
-        Receiver ! {op_log_exception, Event}
+        Receiver ! {sync_log_exception, Event}
     catch E:T ->
         lager:error("send op_log_end to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
     end,
@@ -229,23 +199,13 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-get_rest_request_index_from_logger() ->
-    try
-        gen_server:call(esync_log_op_logger, get_latest_index)
-    catch
-        E:T ->
-            lager:error("gen server call get_latest_index failed [~p:~p]", [E, T]),
-            ?DEFAULT_OP_LOG_START_INDEX
-    end.
-
 handle_rest_response(Receiver, Response) ->
     case binary:split(Response, <<"\n">>) of
         [Line, Rest] ->
             try
-                [_ServerId, Rest1] = binary:split(Line, ?OP_LOG_SEP),
+                [ServerId, Rest1] = binary:split(Line, ?OP_LOG_SEP),
                 [Index, Rest2] = binary:split(Rest1, ?OP_LOG_SEP),
-                Receiver ! {op_log, {binary_to_integer(Index), binary_part(Rest2, 0, byte_size(Rest2)-1)}}
+                Receiver ! {sync_log, {ServerId, binary_to_integer(Index), binary_part(Rest2, 0, byte_size(Rest2)-1)}}
             catch E:T ->
                 lager:error("send op_log [~p] to receiver [~p] failed [~p:~p]", [Response, Receiver, E ,T])
             end,

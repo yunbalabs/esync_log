@@ -14,14 +14,18 @@
 %% API
 -export([start_link/0]).
 
--export([log_command/1]).
+-export([log_command/1, log_sync_command/3]).
+
+-export([start_sync/2, cancel_sync/0]).
 
 -export([
+    open_read_logger/0,
     read_logger_line/1,
     position_logger_to_index/2,
     close_logger/1,
-    split_index_from_op_log_line/1,
-    is_full_line/1
+    get_line_index/1,
+    is_full_line/1,
+    get_line_server_id/1
 ]).
 
 %% gen_server callbacks
@@ -47,10 +51,23 @@
 %%% API
 %%%===================================================================
 
-%% @doc Notifies an op log.
+%% @doc handle an op log.
 -spec log_command(binary()) -> ok.
 log_command(Command) ->
     gen_server:cast(?MODULE, {oplog, Command}).
+
+%% @doc handle an sync op log with index.
+-spec log_sync_command(binary(), integer(), binary()) -> ok.
+log_sync_command(ServerId, Index, Command) ->
+    gen_server:cast(?MODULE, {synclog, ServerId, Index, Command}).
+
+%% @doc handle an sync op log with index.
+-spec start_sync(string(), integer()) -> ok.
+start_sync(Host, Port) ->
+    gen_server:call(?MODULE, {start_sync, Host, Port}).
+
+cancel_sync() ->
+    gen_server:call(?MODULE, cancel_sync).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -138,8 +155,24 @@ handle_call(_Request, _From, State) ->
 
 handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = ServerId}) ->
     OpIndex = LastOpIndex + 1,
-    %BinOpLog = format_command_to_op_log(OpIndex, Command),
     lager:debug("write OpIndex [~p]", [OpIndex]),
+    Line = iolist_to_binary([
+        ServerId, ?OP_LOG_SEP
+        ,integer_to_binary(OpIndex), ?OP_LOG_SEP
+        ,BinOpLog, "\n"
+    ]),
+    write_bin_log_to_op_log_file(OpLogFile, Line),
+    {noreply, State#state{op_index = OpIndex}};
+handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = ServerId}) ->
+    OpIndex = Index,
+    case Index == LastOpIndex+1 of
+        true ->
+            ok;
+        _ ->
+            lager:error("conflict at op Index [~p] with sync Index [~p], reset index, Log [~p]", [OpIndex, Index, BinOpLog]),
+            ok
+    end,
+    lager:debug("write sync OpIndex [~p]", [Index]),
     Line = iolist_to_binary([
         integer_to_binary(OpIndex), ?OP_LOG_SEP
         ,ServerId, ?OP_LOG_SEP
@@ -147,7 +180,6 @@ handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index 
     ]),
     write_bin_log_to_op_log_file(OpLogFile, Line),
     {noreply, State#state{op_index = OpIndex}};
-
 handle_cast(_Request, State) ->
     {noreply, State}.
 
@@ -210,13 +242,12 @@ position_logger_to_index(File, Index) when is_integer(Index) ->
         _ ->
             file:position(File, {bof, 0}),
             position_line_by_line(File, Index)
-    end,
-    File.
+    end.
 
 position_line_by_line(File, Index) ->
     case read_logger_line(File) of
         {ok, Line} ->
-            case edis_op_logger:split_index_from_op_log_line(Line) of
+            case get_line_index(Line) of
                 Index ->
                     lager:info("found index [~p] in Line [~p]", [Index, Line]),
                     ok;
@@ -291,21 +322,27 @@ get_last_op_log_index() ->
             case LastLine of
                 {ok, BinLastLine} ->
                     lager:debug("get last line from current log succ: [~p]", [LastLine]),
-                    split_index_from_op_log_line(BinLastLine);
+                    get_line_index(BinLastLine);
                 Error ->
                     lager:error("try to read last log op line failed [~p]", [Error]),
                     ?DEFAULT_OP_LOG_START_INDEX
             end
     end.
 
-split_index_from_op_log_line(BinLastLine) ->
+get_line_index(BinLastLine) ->
     case binary:split(BinLastLine, ?OP_LOG_SEP) of
-        [BinIndex, _Rest] ->
-            try
-                erlang:binary_to_integer(BinIndex)
-            catch E:T ->
-                lager:error("index binary_to_integer [~p] failed [~p:~p]", [BinIndex, E, T]),
-                ?DEFAULT_OP_LOG_START_INDEX
+        [_ServerId, Rest1] ->
+            case binary:split(Rest1, ?OP_LOG_SEP) of
+                [BinIndex, _Rest2] ->
+                    try
+                        erlang:binary_to_integer(BinIndex)
+                    catch E:T ->
+                        lager:error("index binary_to_integer [~p] failed [~p:~p]", [BinIndex, E, T]),
+                        ?DEFAULT_OP_LOG_START_INDEX
+                    end;
+                _ ->
+                    lager:info("get an illegal op log line [~p], set to default index", [BinLastLine]),
+                    ?DEFAULT_OP_LOG_START_INDEX
             end;
         _ ->
             lager:info("get an illegal op log line [~p], set to default index", [BinLastLine]),
@@ -336,6 +373,15 @@ is_full_line(Line) when is_binary(Line) ->
                 10 -> true;
                 _ -> false
             end
+    end.
+
+-spec(get_line_server_id(binary()) -> binary()).
+get_line_server_id(Line) when is_binary(Line) ->
+    case binary:split(Line, ?OP_LOG_SEP) of
+        [ServerId, _Rest] -> ServerId;
+        _ ->
+            lager:error("get server id failed [~p]", [Line]),
+            ?DEFAULT_SERVER_ID
     end.
 
 get_server_id() ->

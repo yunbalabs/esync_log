@@ -16,3 +16,6 @@
 -define(DEFAULT_OP_LOG_START_INDEX, 0).
 
 -define(DEFAULT_SERVER_ID_FILE_NAME, "oplog/server_id").
+
+-define(DEFAULT_REQ_INDEX, 0).
+-define(DEFAULT_SERVER_ID, undefined).
