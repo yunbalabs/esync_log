@@ -130,15 +130,16 @@ init([]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call(get_read_logger, _From, State) ->
-    Result = open_and_ensure_read_logger(),
+handle_call({start_sync, Host, Port}, _From, State = #state{server_id = ServerId, op_index = LastOpIndex}) ->
+    Result = gen_server:call(esync_log_rest_request_handler, {ServerId, LastOpIndex, Host, Port}),
     lager:debug("get_or_create_read_logger [~p]", [Result]),
     {reply, Result, State};
-handle_call(get_latest_index, _From, State = #state{op_index = LastOpIndex}) ->
+handle_call(cancel_sync, _From, State = #state{op_index = LastOpIndex}) ->
     Result = LastOpIndex,
     lager:debug("get_latest_index [~p]", [Result]),
     {reply, Result, State};
 handle_call(_Request, _From, State) ->
+    lager:debug("unknown call request [~p] from [~p]", [_Request, _From]),
     {reply, ok, State}.
 
 %%--------------------------------------------------------------------
@@ -164,15 +165,16 @@ handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index 
     write_bin_log_to_op_log_file(OpLogFile, Line),
     {noreply, State#state{op_index = OpIndex}};
 handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = ServerId}) ->
-    OpIndex = Index,
-    case Index == LastOpIndex+1 of
-        true ->
-            ok;
-        _ ->
-            lager:error("conflict at op Index [~p] with sync Index [~p], reset index, Log [~p]", [OpIndex, Index, BinOpLog]),
-            ok
-    end,
-    lager:debug("write sync OpIndex [~p]", [Index]),
+    LocalIndex = LastOpIndex+1,
+    OpIndex =
+        case Index == LocalIndex of
+            true ->
+                Index;
+            _ ->
+                lager:error("conflict at local Index [~p] with sync Index [~p], set index to lager one, Log [~p]", [LocalIndex, Index, BinOpLog]),
+                max(Index, LocalIndex)
+        end,
+    lager:debug("write sync OpIndex [~p]", [OpIndex]),
     Line = iolist_to_binary([
         integer_to_binary(OpIndex), ?OP_LOG_SEP
         ,ServerId, ?OP_LOG_SEP

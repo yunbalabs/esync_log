@@ -50,6 +50,7 @@ start(_StartType, _StartArgs) ->
     application:start(lager),
 
     start_cowboy(),
+    esync_log_rest_request_sup:start_link(),
     case esync_log_sup:start_link() of
         {ok, Pid} ->
             {ok, Pid};
