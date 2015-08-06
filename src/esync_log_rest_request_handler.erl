@@ -85,10 +85,15 @@ init([]) ->
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
 handle_call({rest_sync, {ServerId, Index, Host, Port}}, _From, State = #state{rest_request_id = undefined}) ->
-    RestUrl = esync_log:make_up_rest_rul(Host, Port, ServerId, Index),
-    RestRequestId = httpc:request(get, {RestUrl, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
-    lager:debug("rest sync to url [~p] requstId [~p]", [RestUrl, RestRequestId]),
-    {reply, {ok, RestUrl, RestRequestId}, State#state{rest_url = RestUrl, rest_request_id = RestRequestId}};
+    RestUrl = esync_log:make_rest_request_url(Host, Port, ServerId, Index),
+    RestRequestResult = httpc:request(get, {RestUrl, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
+    RequestId =
+        case RestRequestResult of
+            {ok, Id} -> Id;
+            _ -> undefined
+        end,
+    lager:debug("rest sync to url [~p] requst result [~p]", [RestUrl, RestRequestResult]),
+    {reply, {RestUrl, RestRequestResult}, State#state{rest_url = RestUrl, rest_request_id = RequestId}};
 handle_call({rest_sync, Args}, _From, State = #state{rest_request_id = RestRequestId}) ->
     lager:debug("rest sync http now still unfinished requstId [~p]", [RestRequestId]),
     {reply, {error, Args, RestRequestId}, State};
@@ -102,6 +107,7 @@ handle_call(cancel_rest_sync, _From, State = #state{rest_request_id = RestReques
     {reply, Result, State#state{rest_request_id = undefined}};
 
 handle_call(_Request, _From, State) ->
+    lager:debug("unknown request [~p] from [~p]", [_Request, _From]),
     {reply, ok, State}.
 
 %%--------------------------------------------------------------------

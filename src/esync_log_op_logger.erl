@@ -131,12 +131,12 @@ init([]) ->
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
 handle_call({start_sync, Host, Port}, _From, State = #state{server_id = ServerId, op_index = LastOpIndex}) ->
-    Result = gen_server:call(esync_log_rest_request_handler, {ServerId, LastOpIndex, Host, Port}),
-    lager:debug("get_or_create_read_logger [~p]", [Result]),
+    Result = gen_server:call(esync_log_rest_request_handler, {rest_sync, {ServerId, LastOpIndex, Host, Port}}),
+    lager:debug("start_sync result [~p]", [Result]),
     {reply, Result, State};
 handle_call(cancel_sync, _From, State = #state{op_index = LastOpIndex}) ->
-    Result = LastOpIndex,
-    lager:debug("get_latest_index [~p]", [Result]),
+    Result = gen_server:call(esync_log_rest_request_handler, cancel_rest_sync),
+    lager:debug("cancel_sync result [~p]", [Result]),
     {reply, Result, State};
 handle_call(_Request, _From, State) ->
     lager:debug("unknown call request [~p] from [~p]", [_Request, _From]),

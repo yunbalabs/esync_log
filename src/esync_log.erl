@@ -85,7 +85,7 @@ get_config(Field, Default) ->
             Default
     end.
 
-make_rest_request_url(Host, Port, Index, ServerId) ->
+make_rest_request_url(Host, Port, ServerId, Index) ->
     RequestUrlPath = esync_log:get_config(rest_url_path, "/rest/oplog/"),
     %% eg. http://localhost:8765/rest/oplog/?serverId=...&index=...
     lists:concat(["http://", Host, ":", integer_to_list(Port), RequestUrlPath, "?serverId=", binary_to_list(ServerId), "&index=", integer_to_list(Index)]).
