@@ -166,8 +166,12 @@ handle_info({http, {RequestId, Event, _Headers}}, State = #state{op_log_receiver
     catch E:T ->
         lager:error("send op_log_end to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
     end,
-
     {noreply, State};
+
+handle_info({set_sync_receiver, Receiver}, State) ->
+    lager:debug("set_sync_receiver [~p]", [Receiver]),
+    {noreply, State#state{op_log_receiver = Receiver}};
+
 handle_info(_Info, State) ->
     lager:debug("unknown info [~p]", [_Info]),
     {noreply, State}.

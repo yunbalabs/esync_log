@@ -14,7 +14,7 @@
 %% API
 -export([log_command/1, log_sync_command/3]).
 
--export([start_sync/0, start_sync/2, cancel_sync/0]).
+-export([start_sync/0, start_sync/2, cancel_sync/0, set_sync_receiver/1]).
 
 -export([get_config/2, make_rest_request_url/4]).
 
@@ -127,3 +127,6 @@ start_sync() ->
 cancel_sync() ->
     esync_log_op_logger:cancel_sync().
 
+-spec (set_sync_receiver(pid() | atom()) -> ok).
+set_sync_receiver(Receiver) ->
+    esync_log_rest_request_handler ! {set_sync_receiver, Receiver}.
