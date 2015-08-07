@@ -96,7 +96,7 @@ handle_call({rest_sync, {ServerId, Index, Host, Port}}, _From, State = #state{re
     {reply, {RestUrl, RestRequestResult}, State#state{rest_url = RestUrl, rest_request_id = RequestId}};
 handle_call({rest_sync, Args}, _From, State = #state{rest_request_id = RestRequestId}) ->
     lager:debug("rest sync http now still unfinished requstId [~p]", [RestRequestId]),
-    {reply, {error, Args, RestRequestId}, State};
+    {reply, {already_started, Args, RestRequestId}, State};
 
 handle_call(cancel_rest_sync, _From, State = #state{rest_request_id = undefined}) ->
     lager:debug("rest sync http still not started", []),
@@ -143,7 +143,7 @@ handle_info({http, {RequestId, stream_start, Headers}}, State = #state{op_log_re
     try
         Receiver ! sync_log_start
     catch E:T ->
-        lager:error("send op_log_start to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
+        lager:error("send sync_log_start to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
     end,
     {noreply, State#state{rest_buf = <<>>}};
 handle_info({http, {RequestId, stream, BinBodyPart}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId, rest_buf = Buf}) ->
@@ -156,15 +156,15 @@ handle_info({http, {RequestId, stream_end, _Headers}}, State = #state{op_log_rec
     try
         Receiver ! sync_log_end
     catch E:T ->
-        lager:error("send op_log_end to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
+        lager:error("send sync_log_end to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
     end,
     {noreply, State};
-handle_info({http, {RequestId, Event, _Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
-    lager:debug("stream unknown event [~p]", [Event]),
+handle_info({http, {RequestId, {error, Event}, _Headers}}, State = #state{op_log_receiver = Receiver, rest_request_id = RequestId}) ->
+    lager:debug("stream error event [~p]", [Event]),
     try
-        Receiver ! {sync_log_exception, Event}
+        Receiver ! {sync_log_error, Event}
     catch E:T ->
-        lager:error("send op_log_end to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
+        lager:error("send sync_log_error to receiver [~p] failed [~p:~p]", [Receiver, E ,T])
     end,
     {noreply, State};
 
@@ -215,7 +215,7 @@ handle_rest_response(Receiver, Response) ->
             try
                 [ServerId, Rest1] = binary:split(Line, ?OP_LOG_SEP),
                 [Index, Rest2] = binary:split(Rest1, ?OP_LOG_SEP),
-                Receiver ! {sync_log, {ServerId, binary_to_integer(Index), binary_part(Rest2, 0, byte_size(Rest2)-1)}}
+                Receiver ! {sync_log, {ServerId, binary_to_integer(Index), Rest2}}
             catch E:T ->
                 lager:error("send op_log [~p] to receiver [~p] failed [~p:~p]", [Response, Receiver, E ,T])
             end,
