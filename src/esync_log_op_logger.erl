@@ -59,6 +59,7 @@ log_command(Command) ->
 %% @doc handle an sync op log with index.
 -spec log_sync_command(binary(), integer(), binary()) -> ok.
 log_sync_command(ServerId, Index, Command) ->
+    lager:debug("Index [~p]", [Index]),
     gen_server:cast(?MODULE, {synclog, ServerId, Index, Command}).
 
 %% @doc handle an sync op log with index.
@@ -164,7 +165,8 @@ handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index 
     ]),
     write_bin_log_to_op_log_file(OpLogFile, Line),
     {noreply, State#state{op_index = OpIndex}};
-handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = ServerId}) ->
+handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = _SelfServerId}) ->
+    lager:debug("synclog Index [~p] from server id [~p]", [Index, ServerId]),
     LocalIndex = LastOpIndex+1,
     OpIndex =
         case Index == LocalIndex of
@@ -176,13 +178,14 @@ handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = O
         end,
     lager:debug("write sync OpIndex [~p]", [OpIndex]),
     Line = iolist_to_binary([
-        integer_to_binary(OpIndex), ?OP_LOG_SEP
-        ,ServerId, ?OP_LOG_SEP
+        ServerId, ?OP_LOG_SEP
+        ,integer_to_binary(OpIndex), ?OP_LOG_SEP
         ,BinOpLog, "\n"
     ]),
     write_bin_log_to_op_log_file(OpLogFile, Line),
     {noreply, State#state{op_index = OpIndex}};
 handle_cast(_Request, State) ->
+    lager:error("handle unknown cast [~p]", [_Request]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -259,7 +262,9 @@ position_line_by_line(File, Index) ->
                     lager:error("splited index [~p] > specified index [~p], set back to previos line [~p]", [N, Index, Line]),
                     {ok, _} = file:position(File, {cur, -byte_size(Line)}),
                     ok
-            end
+            end;
+        _ ->
+            ok
     end.
 
 %% API call with block
