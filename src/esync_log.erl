@@ -107,9 +107,9 @@ start_cowboy() ->
     ]).
 
 %% @doc handle an op log.
--spec log_command(#esync_command{}) -> ok.
-log_command(Command) ->
-    esync_log_op_logger:log_command(Command).
+-spec log_command([binary()]) -> ok.
+log_command(Commands) ->
+    esync_log_op_logger:log_command(Commands).
 
 %% @doc handle an sync op log with index.
 -spec log_sync_command(binary(), integer(), binary()) -> ok.

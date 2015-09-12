@@ -41,10 +41,8 @@
 -include("esync_log.hrl").
 
 -record(state, {
-    op_log_file                                 ::term(),
-    op_index                                    ::integer(),
-    server_id                                   ::binary(),
-    client                                      ::pid()
+    server_id                                   :: integer(),
+    op_log_file                                 :: term()
 }).
 
 %%%===================================================================
@@ -52,9 +50,9 @@
 %%%===================================================================
 
 %% @doc handle an op log.
--spec log_command(#esync_command{}) -> ok.
-log_command(Command) ->
-    gen_server:cast(?MODULE, {oplog, Command}).
+-spec log_command([binary()]) -> ok.
+log_command(Commands) ->
+    gen_server:cast(?MODULE, {oplog, Commands}).
 
 %% @doc handle an sync op log with index.
 -spec log_sync_command(binary(), integer(), binary()) -> ok.
@@ -101,20 +99,12 @@ start_link() ->
     {stop, Reason :: term()} | ignore).
 
 init([]) ->
-    %% get start op log index from file
-    StartOpIndex = get_last_op_log_index(),
-
-    %% get server id
-    ServerId = get_server_id(),
-
     %% open log file to write op in
     OpLogFile = open_write_logger(),
 
-    lager:debug("open log file [~p] start index [~p]", [?DEFAULT_OP_LOG_FILE_NAME, StartOpIndex]),
+    lager:debug("open log file [~p]", [?DEFAULT_OP_LOG_FILE_NAME]),
 
-    Client = edis_db:process(0),
-
-    {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId, client = Client}}.
+    {ok, #state{op_log_file = OpLogFile}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -131,11 +121,11 @@ init([]) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), Reply :: term(), NewState :: #state{}} |
     {stop, Reason :: term(), NewState :: #state{}}).
-handle_call({start_sync, Host, Port}, _From, State = #state{server_id = ServerId, op_index = LastOpIndex}) ->
-    Result = gen_server:call(esync_log_rest_request_handler, {rest_sync, {ServerId, LastOpIndex, Host, Port}}),
+handle_call({start_sync, Host, Port, Index}, _From, State = #state{server_id = ServerId}) ->
+    Result = gen_server:call(esync_log_rest_request_handler, {rest_sync, {ServerId, Index, Host, Port}}),
     lager:debug("start_sync result [~p]", [Result]),
     {reply, Result, State};
-handle_call(cancel_sync, _From, State = #state{op_index = LastOpIndex}) ->
+handle_call(cancel_sync, _From, State = #state{}) ->
     Result = gen_server:call(esync_log_rest_request_handler, cancel_rest_sync),
     lager:debug("cancel_sync result [~p]", [Result]),
     {reply, Result, State};
@@ -155,19 +145,16 @@ handle_call(_Request, _From, State) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
 
-handle_cast({oplog, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = ServerId}) ->
-    OpIndex = LastOpIndex + 1,
-    lager:debug("write OpIndex [~p]", [OpIndex]),
-    Line = iolist_to_binary([
-        ServerId, ?OP_LOG_SEP
-        ,integer_to_binary(OpIndex), ?OP_LOG_SEP
-        ,BinOpLog, "\n"
-    ]),
-    write_bin_log_to_op_log_file(OpLogFile, Line),
-    {noreply, State#state{op_index = OpIndex}};
-handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex, server_id = _SelfServerId}) ->
+handle_cast({oplog, BinLogs}, State = #state{op_log_file = OpLogFile}) ->
+    lists:foreach(
+        fun (BinLog) ->
+            Line = <<BinLog/binary, "\n">>,
+            write_bin_log_to_op_log_file(OpLogFile, Line)
+        end, BinLogs),
+    {noreply, State};
+handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = OpLogFile, server_id = _SelfServerId}) ->
     lager:debug("synclog Index [~p] from server id [~p]", [Index, ServerId]),
-    LocalIndex = LastOpIndex+1,
+    LocalIndex = 0+1,
     OpIndex =
         case Index == LocalIndex of
             true ->
@@ -183,7 +170,7 @@ handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = O
         ,BinOpLog, "\n"
     ]),
     write_bin_log_to_op_log_file(OpLogFile, Line),
-    {noreply, State#state{op_index = OpIndex}};
+    {noreply, State};
 handle_cast(_Request, State) ->
     lager:error("handle unknown cast [~p]", [_Request]),
     {noreply, State}.
