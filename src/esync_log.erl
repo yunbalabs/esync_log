@@ -22,6 +22,7 @@
 -export([start/2,
     stop/1]).
 
+-include("esync_log.hrl").
 %%%===================================================================
 %%% Application callbacks
 %%%===================================================================
@@ -106,7 +107,7 @@ start_cowboy() ->
     ]).
 
 %% @doc handle an op log.
--spec log_command(binary()) -> ok.
+-spec log_command(#esync_command{}) -> ok.
 log_command(Command) ->
     esync_log_op_logger:log_command(Command).
 

@@ -52,7 +52,7 @@
 %%%===================================================================
 
 %% @doc handle an op log.
--spec log_command(binary()) -> ok.
+-spec log_command(#esync_command{}) -> ok.
 log_command(Command) ->
     gen_server:cast(?MODULE, {oplog, Command}).
 

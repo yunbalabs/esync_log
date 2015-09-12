@@ -19,3 +19,11 @@
 
 -define(DEFAULT_REQ_INDEX, 0).
 -define(DEFAULT_SERVER_ID, undefined).
+
+-type esync_element_op() :: sadd | srem | expire.
+-record(esync_command, {
+    element_op      :: esync_element_op(),
+    db = 0          :: non_neg_integer(),
+    key = <<>>      :: binary(),
+    elements = []   :: [binary()]
+}).
