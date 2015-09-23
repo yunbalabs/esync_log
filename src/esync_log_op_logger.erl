@@ -42,7 +42,8 @@
 
 -record(state, {
     server_id                                   :: integer(),
-    op_log_file                                 :: term()
+    op_log_file                                 :: term(),
+    op_index                                    :: integer()
 }).
 
 %%%===================================================================
@@ -104,7 +105,10 @@ init([]) ->
 
     lager:debug("open log file [~p]", [?DEFAULT_OP_LOG_FILE_NAME]),
 
-    {ok, #state{op_log_file = OpLogFile}}.
+    ServerId = esync_log:get_config(server_id, 1),
+
+    OpIndex = get_last_op_log_index(),
+    {ok, #state{op_log_file = OpLogFile, server_id = ServerId, op_index = OpIndex}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -145,13 +149,13 @@ handle_call(_Request, _From, State) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
 
-handle_cast({oplog, BinLogs}, State = #state{op_log_file = OpLogFile}) ->
+handle_cast({oplog, BinLogs}, State = #state{op_log_file = OpLogFile, server_id = ServerId, op_index = LastOpIndex}) ->
+    {OpIndex, Lines} = make_log_lines(ServerId, LastOpIndex, BinLogs),
     lists:foreach(
-        fun (BinLog) ->
-            Line = <<BinLog/binary, "\n">>,
+        fun (Line) ->
             write_bin_log_to_op_log_file(OpLogFile, Line)
-        end, BinLogs),
-    {noreply, State};
+        end, Lines),
+    {noreply, State#state{op_index = OpIndex}};
 handle_cast({synclog, ServerId, Index, BinOpLog}, State = #state{op_log_file = OpLogFile, server_id = _SelfServerId}) ->
     lager:debug("synclog Index [~p] from server id [~p]", [Index, ServerId]),
     LocalIndex = 0+1,
@@ -401,3 +405,32 @@ gen_server_id() ->
     %% generated server id is based on nodename & ip & timestamp
     HashInt = erlang:phash2([node(), inet:getif(), os:timestamp()]),
     integer_to_binary(HashInt).
+
+make_log_lines(ServerId, LastOpIndex, BinLogs) ->
+    make_log_lines(ServerId, LastOpIndex, BinLogs, []).
+make_log_lines(_ServerId, LastOpIndex, [], Lines) ->
+    {LastOpIndex, Lines};
+make_log_lines(ServerId, LastOpIndex, [BinLog | Rest], Lines) ->
+    OpIndex = LastOpIndex + 1,
+    Line = iolist_to_binary([
+        make_sure_binay(ServerId)
+        , ?OP_LOG_SEP, make_sure_binay(OpIndex)
+        , ?OP_LOG_SEP, make_sure_binay(BinLog)
+        , <<"\n">>
+    ]),
+    make_log_lines(ServerId, OpIndex, Rest, Lines ++ [Line]).
+
+
+make_sure_binay(Data) ->
+    if
+        is_integer(Data) ->
+            integer_to_binary(Data);
+        is_list(Data) ->
+            list_to_binary(Data);
+        is_atom(Data) ->
+            atom_to_binary(Data, latin1);
+        is_float(Data) ->
+            float_to_binary(Data);
+        true ->
+            Data
+    end.
